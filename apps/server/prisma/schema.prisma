@@ -1,0 +1,201 @@
+// 九尾狐 M1 画布骨架：Prisma schema（SQLite，单机模式）
+// 对应 Doc/08-Workbench-Canvas-Design.md §3 数据模型（M1 范围：Project + FlowCanvas）
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id           Int          @id @default(autoincrement())
+  name         String
+  overview     String       @default("") // 项目概述
+  videoRatio   String       @default("9:16") // 影片比例
+  visualSkill  String       @default("") // 视觉手册（art_skills 画风）
+  directorSkill String      @default("") // 导演手册（story_skills 叙事）
+  era          String       @default("") // 时代/历史背景（如 春秋战国、现代都市），分镜首帧注入时代约束
+  episodeCount Int          @default(3) // 计划场数（旧版分集数；新版场次）
+  totalDurationMin Int      @default(20) // 全剧总时长（分钟）
+  scriptContent String      @default("") // 整片剧本（Markdown，含 ## 场 N 分场；一个项目一部完整剧本）
+  createdAt    DateTime     @default(now())
+  canvases     FlowCanvas[]
+  assets       Asset[]
+  episodes     Episode[]
+  storyboards  Storyboard[]
+  novels       Novel[]
+  episodeAssets EpisodeAsset[]
+  longVideos   EpisodeLongVideo[]
+}
+
+// 源小说（原著）：项目级，一个项目一部；AI 改编/剧本创作的输入
+model Novel {
+  id        Int      @id @default(autoincrement())
+  projectId Int      @unique
+  title     String   @default("未命名小说")
+  content   String   @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+// 场（scene）：一个项目按「## 场 N」划分的场景单元；name 存场标题（如「场1·茅屋·夜」）、index 存场序号
+model Episode {
+  id            Int         @id @default(autoincrement())
+  projectId     Int
+  name          String
+  scriptContent String      @default("") // 该场剧本片段（可选；整片剧本以 Project.scriptContent 为准）
+  index         Int         @default(1) // 场序号（对应 Storyboard.sceneIndex）
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model FlowCanvas {
+  id        Int      @id @default(autoincrement())
+  projectId Int
+  episodeId Int
+  // Vue Flow 序列化的画布布局（节点位置/尺寸/连线）；业务数据后续经 flowId 关联
+  nodes     Json
+  edges     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, episodeId])
+}
+
+enum NodeState {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+// 资产卡（角色/场景/道具；parentId 支持父子衍生，对齐 Toonflow o_assets.assetsId）
+model Asset {
+  id          Int      @id @default(autoincrement())
+  projectId   Int
+  episodeId   Int
+  flowId      String   @unique // 画布节点关联键（前端生成 uuid）
+  parentId    Int? // 父资产 id（衍生图）；null = 主图
+  type        String // character | scene | prop
+  name        String
+  prompt      String?
+  filePath    String?
+  // 参考图（scene/prop 图生图用）：上传的参考图 oss 路径（/oss/...）；有则生成走图生图，无则文生图
+  refImagePath String?
+  state       NodeState @default(QUEUED)
+  errorReason String?
+  // 配音配置（仅 character 类型使用）：voiceActor=选定配音演员，voiceDialect=方言
+  voiceActor   String?
+  voiceDialect String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parent  Asset?  @relation("AssetDerive", fields: [parentId], references: [id])
+  derives Asset[] @relation("AssetDerive")
+
+  @@index([projectId, episodeId])
+}
+
+// 分镜卡（一个镜头 = 一个节点；flowId 关联画布节点；assetIds 引用资产卡做一致性约束）
+model Storyboard {
+  id          Int        @id @default(autoincrement())
+  projectId   Int
+  episodeId   Int
+  flowId      String     @unique
+  index       Int        @default(0) // 镜头顺序
+  sceneIndex  Int        @default(0) // 所属场次（1 起；0=未标注，按整集处理）
+  duration    Int        @default(5) // 视频推荐时长（秒，≤15，Minimax 单次任务）
+  prompt      String     @default("") // 分镜提示词（三段式：画面/光影/风格）
+  videoDesc   String     @default("") // 视频生成描述（M5 视频用）
+  filePath    String?
+  state       NodeState  @default(QUEUED)
+  errorReason String?
+  assetIds    Json       @default("[]") // 引用的资产卡 id
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  videos      VideoClip[]
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, episodeId])
+}
+
+// 运行期设置（工作流路径等；DB 覆盖 .env 默认）
+model Setting {
+  key   String @id
+  value String
+}
+
+// 剧本分析出的集-资产映射（「分析资产」持久化；分集视频详情页按集查询显示）
+model EpisodeAsset {
+  id          Int      @id @default(autoincrement())
+  projectId   Int
+  type        String // character | scene | prop | material
+  name        String
+  description String   @default("")
+  episodes    Json     @default("[]") // 出现的集序号数组 [1,2,3]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, type, name])
+  @@index([projectId])
+}
+
+// 视频片段（一个分镜 → 一个视频；flowId 关联画布节点）
+model VideoClip {
+  id           Int        @id @default(autoincrement())
+  projectId    Int
+  episodeId    Int
+  storyboardId Int
+  flowId       String     @unique
+  filePath     String?
+  state        NodeState  @default(QUEUED)
+  errorReason  String?
+  // 候选版本审查（Plotloom asset-selection 借鉴）：每次重新生成，旧视频归档为候选；selectedVersion 锁定采用版本
+  candidates      Json @default("[]") // [{version, filePath, createdAt, prompt}]
+  selectedVersion Int? // 锁定的候选版本号（null = 用最新）
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  storyboard Storyboard @relation(fields: [storyboardId], references: [id], onDelete: Cascade)
+
+  @@index([storyboardId])
+}
+
+// 长视频生成记录（Director 串联分镜生成；按集+场维度，支持分段重跑）
+model EpisodeLongVideo {
+  id            Int      @id @default(autoincrement())
+  projectId     Int
+  episodeId     Int
+  sceneIndex    Int      @default(0) // 0=整集；>0=该场（按场生成时）
+  filePath      String? // /oss/videos/long_xxx.mp4
+  state         NodeState @default(QUEUED)
+  errorReason   String?
+  segmentCount  Int      @default(0)
+  totalFrames   Int      @default(0)
+  // 分镜片段快照（index/提示词/首帧图），用于分段展示与重跑
+  segments      Json     @default("[]")
+  // 各段生成状态/版本
+  segmentStates Json     @default("[]")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, episodeId, sceneIndex])
+  @@index([projectId])
+}

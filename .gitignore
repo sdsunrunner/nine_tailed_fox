@@ -1,0 +1,33 @@
+﻿# dependencies
+node_modules/
+.pnpm-store/
+
+# build
+dist/
+build/
+
+# env & secrets
+.env
+.env.local
+*.key
+
+# runtime data
+apps/server/prisma/dev.db
+apps/server/prisma/dev.db-journal
+*.log
+
+# python
+__pycache__/
+*.pyc
+apps/ai/chroma_db/
+apps/ai/models/
+
+# generated media & local runtime
+apps/server/oss/
+apps/server/workflows-generated/
+apps/server/data/
+
+# editor
+.idea/
+.vscode/
+.DS_Store
